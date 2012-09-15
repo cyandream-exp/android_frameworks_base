@@ -84,6 +84,16 @@ public class RecentsPanelView extends FrameLayout implements OnItemClickListener
     private boolean mWaitingForWindowAnimation;
     private long mWindowAnimationStartTime;
     private boolean mCallUiHiddenBeforeNextReload;
+    private boolean mWaitingToShowAnimated;
+    private boolean mReadyToShow;
+    private int mNumItemsWaitingForThumbnailsAndIcons;
+    private Choreographer mChoreo;
+    OnRecentsPanelVisibilityChangedListener mVisibilityChangedListener;
+
+    ImageView mClearRecents;
+    ImageView mPlaceholderThumbnail;
+    View mTransitionBg;
+    boolean mHideRecentsAfterThumbnailScaleUpStarted;
 
     private RecentTasksLoader mRecentTasksLoader;
     private ArrayList<TaskDescription> mRecentTaskDescriptions;
@@ -341,6 +351,51 @@ public class RecentsPanelView extends FrameLayout implements OnItemClickListener
             mRecentsNoApps.setAlpha(1f);
             mRecentsNoApps.setVisibility(noApps ? View.VISIBLE : View.INVISIBLE);
 
+            // if there are no apps, either bring up a "No recent apps" message, or just
+            // quit early
+            boolean noApps = !mFirstScreenful && (mRecentTaskDescriptions.size() == 0);
+
+            // if no apps found, we just hide the "Clear" button as it's not needed
+            if(mClearRecents != null){
+                mClearRecents.setVisibility(noApps ? View.GONE : View.VISIBLE);
+            }
+
+            if (mRecentsNoApps != null) {
+                mRecentsNoApps.setAlpha(1f);
+                mRecentsNoApps.setVisibility(noApps ? View.VISIBLE : View.INVISIBLE);
+            } else {
+                if (noApps) {
+                   if (DEBUG) Log.v(TAG, "Nothing to show");
+                    // Need to set recent tasks to dirty so that next time we load, we
+                    // refresh the list of tasks
+                    mRecentTasksLoader.cancelLoadingThumbnailsAndIcons();
+                    mRecentTasksDirty = true;
+
+                    mWaitingToShow = false;
+                    mReadyToShow = false;
+                    return;
+                }
+            }
+        } else {
+            // Need to set recent tasks to dirty so that next time we load, we
+            // refresh the list of tasks
+            mRecentTasksLoader.cancelLoadingThumbnailsAndIcons();
+            mRecentTasksDirty = true;
+            mWaitingToShow = false;
+            mReadyToShow = false;
+        }
+        if (animate) {
+            if (mShowing != show) {
+                mShowing = show;
+                if (show) {
+                    setVisibility(View.VISIBLE);
+                }
+                mChoreo.startAnimation(show);
+            }
+        } else {
+            mShowing = show;
+            setVisibility(show ? View.VISIBLE : View.GONE);
+            mChoreo.jumpTo(show);
             onAnimationEnd(null);
             setFocusable(true);
             setFocusableInTouchMode(true);
@@ -446,6 +501,16 @@ public class RecentsPanelView extends FrameLayout implements OnItemClickListener
 
         mRecentsScrim = findViewById(R.id.recents_bg_protect);
         mRecentsNoApps = findViewById(R.id.recents_no_apps);
+
+        mClearRecents = (ImageView) findViewById(R.id.recents_clear);
+        if (mClearRecents != null){
+            mClearRecents.setOnClickListener(new OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    mRecentsContainer.removeAllViewsInLayout();
+                }
+            });
+        }
 
         if (mRecentsScrim != null) {
             mHighEndGfx = ActivityManager.isHighEndGfx();
@@ -675,8 +740,23 @@ public class RecentsPanelView extends FrameLayout implements OnItemClickListener
                 null :
                 ActivityOptions.makeThumbnailScaleUpAnimation(
                         holder.thumbnailViewImage, bm, 0, 0, null).toBundle();
+        show(false, true);
 
-        show(false);
+        mThumbnailScaleUpStarted = false;
+        ActivityOptions opts = ActivityOptions.makeDelayedThumbnailScaleUpAnimation(
+                holder.thumbnailViewImage, bm, 0, 0,
+                new ActivityOptions.OnAnimationStartedListener() {
+                    @Override
+                    public void onAnimationStarted() {
+                        mThumbnailScaleUpStarted = true;
+                        if (!mHighEndGfx) {
+                            mPlaceholderThumbnail.setVisibility(INVISIBLE);
+                        }
+                        if (mHideRecentsAfterThumbnailScaleUpStarted) {
+                            hideWindow();
+                        }
+                    }
+                });
         if (ad.taskId >= 0) {
             // This is an active task; it should just go to the foreground.
             am.moveTaskToFront(ad.taskId, ActivityManager.MOVE_TASK_WITH_HOME,
